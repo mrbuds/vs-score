@@ -114,6 +114,10 @@ class VideoProcessor:
             self.parent.update_status("Prêt")
             self.parent.root.after(500, self.final_status_update, days)
             
+            # Rafraîchir la liste des panoramas dans l'onglet 2
+            if self.parent.panorama_files:
+                self.parent.refresh_panorama_list()
+            
             from tkinter import messagebox
             if failed == 0:
                 messagebox.showinfo("Succès", f"Traitement terminé!\n{completed} vidéos en {elapsed:.1f}s")

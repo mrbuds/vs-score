@@ -468,6 +468,15 @@ Note: Le fichier 'semaine.png' ne sera PAS inclus dans le tableau final.
         dialog.wait_window()
         return result['day']
     
+    def refresh_panorama_list(self):
+        """Rafraîchit la liste des panoramas disponibles dans l'onglet 2"""
+        available_days = list(self.panorama_files.keys())
+        self.day_combo['values'] = available_days
+        if available_days and not self.day_combo.get():
+            self.day_combo.current(0)
+        if available_days:
+            self.log(f"🔄 Onglet 2 mis à jour: {len(available_days)} panorama(s) disponible(s) ({', '.join(available_days)})")
+    
     def load_panoramas(self):
         """Charge des panoramas existants"""
         directory = filedialog.askdirectory(title="Sélectionner le dossier des panoramas")
@@ -483,12 +492,7 @@ Note: Le fichier 'semaine.png' ne sera PAS inclus dans le tableau final.
                 self.panorama_files[day] = img_path
                 self.log(f"Chargé: {day}.png")
                 
-        available_days = list(self.panorama_files.keys())
-        self.day_combo['values'] = available_days
-        if available_days:
-            self.day_combo.current(0)
-            
-        self.log(f"📁 Chargé {len(self.panorama_files)} panorama(s)")
+        self.refresh_panorama_list()
     
     def load_panorama_for_edit(self, event=None):
         """Charge un panorama pour l'édition"""
