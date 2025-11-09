@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Module 2 : Édition des panoramas (simplifié sans détection auto)
+Module 2 : Édition des panoramas
+Version améliorée: SANS POPUPS de confirmation
 """
 
 from PIL import Image, ImageDraw
@@ -33,7 +34,7 @@ class PanoramaEditor:
     def scroll_to_bottom(self):
         """Fait défiler jusqu'en bas"""
         if not self.parent.current_panorama:
-            messagebox.showinfo("Info", "Aucune image chargée")
+            self.parent.log("ℹ️  Aucune image chargée")
             return
         
         self.parent.edit_canvas.update_idletasks()
@@ -43,7 +44,7 @@ class PanoramaEditor:
     def scroll_to_top(self):
         """Fait défiler jusqu'en haut"""
         if not self.parent.current_panorama:
-            messagebox.showinfo("Info", "Aucune image chargée")
+            self.parent.log("ℹ️  Aucune image chargée")
             return
         
         self.parent.edit_canvas.yview_moveto(0.0)
@@ -52,6 +53,7 @@ class PanoramaEditor:
     def fit_to_window(self):
         """Ajuste à la fenêtre"""
         if not self.parent.current_panorama:
+            self.parent.log("ℹ️  Aucune image chargée")
             return
         
         self.parent.edit_canvas.update_idletasks()
@@ -70,8 +72,9 @@ class PanoramaEditor:
             self.parent.log(f"🔍 Zoom ajusté à {int(optimal_zoom)}%")
     
     def apply_crop(self):
-        """Applique le recadrage"""
+        """Applique le recadrage SANS POPUP"""
         if not self.parent.current_panorama:
+            self.parent.log("ℹ️  Aucune image chargée")
             return
             
         w, h = self.parent.current_panorama.size
@@ -79,40 +82,70 @@ class PanoramaEditor:
         bottom = h - self.parent.crop_bottom.get()
         
         if top >= bottom:
+            self.parent.log("❌ Paramètres de recadrage invalides (top >= bottom)")
             messagebox.showerror("Erreur", "Paramètres de recadrage invalides")
             return
+        
+        # Sauvegarder les dimensions avant
+        old_height = h
             
+        # Appliquer le recadrage
         self.parent.current_panorama = self.parent.current_panorama.crop((0, top, w, bottom))
         self.parent.display_image_in_canvas()
         
         w, h = self.parent.current_panorama.size
         self.parent.info_label.config(text=f"Taille: {w}x{h}px")
         
-        self.parent.log(f"Recadrage appliqué: {self.parent.current_day}")
+        pixels_removed = old_height - h
+        self.parent.log(f"✂️ Recadrage appliqué: {self.parent.current_day}")
+        self.parent.log(f"   {pixels_removed}px supprimés (nouvelle hauteur: {h}px)")
     
     def save_edited_panorama(self):
-        """Sauvegarde le panorama édité"""
+        """Sauvegarde le panorama édité SANS POPUP de confirmation"""
         if not self.parent.current_panorama or not self.parent.current_day:
+            self.parent.log("ℹ️  Aucune image à sauvegarder")
             return
+        
+        try:
+            # Sauvegarder directement
+            output_path = self.parent.panorama_files[self.parent.current_day]
+            self.parent.current_panorama.save(output_path)
             
-        result = messagebox.askyesno("Sauvegarder", 
-                                     f"Remplacer le fichier {self.parent.current_day}.png?")
-        if result:
-            self.parent.current_panorama.save(self.parent.panorama_files[self.parent.current_day])
-            self.parent.log(f"Sauvegardé: {self.parent.current_day}.png")
-            messagebox.showinfo("Succès", "Panorama sauvegardé")
+            # Mettre à jour l'original après sauvegarde
+            self.parent.original_panorama = self.parent.current_panorama.copy()
+            
+            w, h = self.parent.current_panorama.size
+            self.parent.log(f"💾 Sauvegardé: {self.parent.current_day}.png ({w}x{h}px)")
+            
+            # Notification visuelle temporaire
+            self.parent.info_label.config(text=f"✅ Sauvegardé!\nTaille: {w}x{h}px")
+            self.parent.root.after(2000, lambda: self.parent.info_label.config(text=f"Taille: {w}x{h}px"))
+            
+        except Exception as e:
+            self.parent.log(f"❌ Erreur lors de la sauvegarde: {e}")
+            messagebox.showerror("Erreur", f"Impossible de sauvegarder:\n{e}")
     
     def undo_changes(self):
         """Annule les modifications"""
-        if self.parent.original_panorama:
-            self.parent.current_panorama = self.parent.original_panorama.copy()
-            self.parent.crop_top.set(0)
-            self.parent.crop_bottom.set(0)
-            self.parent.display_image_in_canvas()
-            self.parent.log("Modifications annulées")
+        if not self.parent.original_panorama:
+            self.parent.log("ℹ️  Rien à annuler")
+            return
+            
+        self.parent.current_panorama = self.parent.original_panorama.copy()
+        self.parent.crop_top.set(0)
+        self.parent.crop_bottom.set(0)
+        self.parent.display_image_in_canvas()
+        
+        w, h = self.parent.current_panorama.size
+        self.parent.info_label.config(text=f"Taille: {w}x{h}px")
+        
+        self.parent.log("↩️  Modifications annulées")
     
     def zoom_image(self, event):
         """Zoom avec la molette"""
+        if not self.parent.current_panorama:
+            return
+            
         if event.delta > 0:
             new_zoom = min(200, self.parent.zoom_scale.get() + 10)
         else:

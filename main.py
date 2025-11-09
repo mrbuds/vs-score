@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
 Interface Last War - Fichier principal
-Utilise les modules pour une meilleure organisation
+Version améliorée: onglet 3 simplifié, pas de popups de confirmation
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from pathlib import Path
-from PIL import Image, ImageTk, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 from datetime import datetime
 import subprocess
 import sys
 import queue
+import re
 
 # Importer les modules
 from video_processor import VideoProcessor
@@ -165,7 +166,7 @@ class LastWarGUI:
         self.crop_top = tk.IntVar(value=0)
         ttk.Spinbox(crop_frame, from_=0, to=2000, increment=10, textvariable=self.crop_top, width=10, command=self.update_crop_preview).grid(row=1, column=1, padx=5, pady=5)
         
-        # Boutons d'action (sans détection auto)
+        # Boutons d'action
         ttk.Button(crop_frame, text="⬇️ Aller en bas", command=self.panorama_editor.scroll_to_bottom).grid(row=2, column=0, pady=3)
         ttk.Button(crop_frame, text="⬆️ Aller en haut", command=self.panorama_editor.scroll_to_top).grid(row=2, column=1, pady=3)
         ttk.Button(crop_frame, text="📏 Ajuster à la fenêtre", command=self.panorama_editor.fit_to_window).grid(row=3, column=0, columnspan=2, pady=3)
@@ -178,7 +179,7 @@ class LastWarGUI:
         self.zoom_scale.set(100)
         self.zoom_scale.pack(fill='x', padx=5, pady=5)
         
-        # Actions
+        # Actions - SANS POPUPS
         action_frame = ttk.LabelFrame(control_panel, text="Actions")
         action_frame.pack(fill='x', pady=10)
         
@@ -189,25 +190,165 @@ class LastWarGUI:
         self.info_label = ttk.Label(control_panel, text="Aucune image chargée", wraplength=200)
         self.info_label.pack(pady=10)
         
-        # Bindings IMPORTANTS
-        self.edit_canvas.bind("<Button-3>", self.panorama_editor.set_crop_line)  # Clic droit
+        # Bindings
+        self.edit_canvas.bind("<Button-3>", self.panorama_editor.set_crop_line)
         self.edit_canvas.bind("<MouseWheel>", self.panorama_editor.zoom_image)
         self.edit_canvas.bind("<Button-1>", self.panorama_editor.start_pan)
         self.edit_canvas.bind("<B1-Motion>", self.panorama_editor.pan_image)
         
     def setup_concat_tab(self):
-        """Onglet 3 - Tableau final"""
-        preview_frame = ttk.LabelFrame(self.concat_tab, text="Aperçu du tableau final")
-        preview_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        """Onglet 3 - Tableau final (SIMPLIFIÉ)"""
+        # Frame principal
+        main_frame = ttk.Frame(self.concat_tab)
+        main_frame.pack(fill='both', expand=True, padx=20, pady=20)
         
-        self.concat_canvas = tk.Canvas(preview_frame, bg='gray')
-        self.concat_canvas.pack(fill='both', expand=True)
+        # Info
+        info_frame = ttk.LabelFrame(main_frame, text="📊 Génération du tableau final")
+        info_frame.pack(fill='both', expand=True, pady=10)
         
-        control_frame = ttk.Frame(self.concat_tab)
-        control_frame.pack(fill='x', padx=10, pady=10)
+        info_text = """
+Cette fonction combine automatiquement tous les panoramas de la semaine
+(Lundi à Samedi) en un seul grand tableau.
+
+Le fichier sera sauvegardé dans le même dossier que vos panoramas
+avec le nom du dossier parent.
+
+Note: Le fichier 'semaine.png' ne sera PAS inclus dans le tableau final.
+        """
         
-        ttk.Button(control_frame, text="Générer aperçu", command=self.preview_concatenation).pack(side=tk.LEFT, padx=5)
-        ttk.Button(control_frame, text="Sauvegarder tableau final", command=self.save_final_table).pack(side=tk.LEFT, padx=5)
+        ttk.Label(info_frame, text=info_text, justify=tk.LEFT, font=('Arial', 10)).pack(padx=20, pady=20)
+        
+        # Status
+        self.concat_status = ttk.Label(info_frame, text="", foreground="blue", font=('Arial', 10, 'bold'))
+        self.concat_status.pack(pady=10)
+        
+        # Bouton principal - GROS et visible
+        button_frame = ttk.Frame(info_frame)
+        button_frame.pack(pady=30)
+        
+        generate_btn = tk.Button(button_frame, 
+                                 text="🎨 Générer le tableau final", 
+                                 command=self.generate_and_save_final_table,
+                                 font=('Arial', 14, 'bold'),
+                                 bg='#4CAF50',
+                                 fg='white',
+                                 padx=30,
+                                 pady=15,
+                                 cursor='hand2')
+        generate_btn.pack()
+        
+        # Conseils
+        tips_frame = ttk.LabelFrame(main_frame, text="💡 Conseils")
+        tips_frame.pack(fill='x', pady=10)
+        
+        tips_text = """
+• Assurez-vous d'avoir chargé les panoramas dans l'onglet 2
+• Les jours manquants seront automatiquement ignorés
+• Le tableau est sauvegardé automatiquement sans confirmation
+        """
+        
+        ttk.Label(tips_frame, text=tips_text, justify=tk.LEFT, font=('Arial', 9)).pack(padx=20, pady=10)
+    
+    def generate_and_save_final_table(self):
+        """Génère et sauvegarde automatiquement le tableau final - SIMPLIFIÉ"""
+        if not self.panorama_files:
+            messagebox.showwarning("Aucun panorama", "Veuillez d'abord charger des panoramas dans l'onglet 2")
+            return
+        
+        self.concat_status.config(text="⏳ Génération en cours...", foreground="orange")
+        self.root.update()
+        
+        try:
+            # Déterminer le dossier de sortie
+            first_panorama = list(self.panorama_files.values())[0]
+            folder = Path(first_panorama).parent
+            folder_name = folder.name
+            
+            # Nom du fichier de sortie basé sur le dossier
+            output_file = folder / f"{folder_name}.png"
+            
+            # Collecter les images (sans 'semaine')
+            images = []
+            headers = []
+            days_found = []
+            
+            for day in self.days:  # Uniquement lundi à samedi
+                if day in self.panorama_files:
+                    img_path = self.panorama_files[day]
+                    if img_path.exists():
+                        img = Image.open(img_path)
+                        images.append(img)
+                        headers.append(day.capitalize())
+                        days_found.append(day)
+            
+            if not images:
+                self.concat_status.config(text="❌ Aucune image trouvée", foreground="red")
+                messagebox.showerror("Erreur", "Aucun panorama trouvé pour générer le tableau")
+                return
+            
+            self.log(f"📊 Génération du tableau avec {len(images)} jour(s): {', '.join(days_found)}")
+            
+            # Calculer les dimensions
+            max_height = max(img.height for img in images)
+            total_width = sum(img.width for img in images)
+            header_height = 60
+            
+            # Créer l'image résultat
+            result = Image.new('RGBA', (total_width, max_height + header_height), (255, 255, 255, 255))
+            
+            # Créer l'en-tête
+            header_img = Image.new('RGBA', (total_width, header_height), (240, 240, 240, 255))
+            draw = ImageDraw.Draw(header_img)
+            
+            # Charger une police
+            try:
+                font = ImageFont.truetype("arial.ttf", 30)
+            except:
+                try:
+                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
+                except:
+                    font = ImageFont.load_default()
+            
+            # Dessiner les en-têtes
+            x_offset = 0
+            for img, header in zip(images, headers):
+                # Centrer le texte
+                bbox = draw.textbbox((0, 0), header, font=font)
+                text_width = bbox[2] - bbox[0]
+                x = x_offset + (img.width - text_width) // 2
+                y = (header_height - 30) // 2
+                
+                draw.text((x, y), header, fill=(0, 0, 0, 255), font=font)
+                x_offset += img.width
+            
+            # Coller l'en-tête
+            result.paste(header_img, (0, 0))
+            
+            # Coller les images
+            x_offset = 0
+            for img in images:
+                result.paste(img, (x_offset, header_height))
+                x_offset += img.width
+            
+            # Sauvegarder
+            result.save(output_file)
+            
+            self.log(f"✅ Tableau sauvegardé: {output_file}")
+            self.log(f"   Dimensions: {total_width}x{max_height + header_height}px")
+            
+            if 'semaine' in self.panorama_files:
+                self.log("ℹ️  Note: 'semaine.png' n'a pas été inclus (utilisation séparée)")
+            
+            self.concat_status.config(text=f"✅ Tableau sauvegardé: {output_file.name}", foreground="green")
+            
+            # Afficher un message de succès discret
+            self.root.after(100, lambda: messagebox.showinfo("Succès", 
+                f"Tableau généré avec succès!\n\nFichier: {output_file.name}\nJours: {', '.join(days_found)}\nDimensions: {total_width}x{max_height}px"))
+            
+        except Exception as e:
+            self.log(f"❌ Erreur lors de la génération: {e}")
+            self.concat_status.config(text=f"❌ Erreur: {str(e)}", foreground="red")
+            messagebox.showerror("Erreur", f"Impossible de générer le tableau:\n{e}")
     
     def check_update_queue(self):
         """Vérifie la queue de mises à jour"""
@@ -264,7 +405,10 @@ class LastWarGUI:
     
     def load_videos(self):
         """Charge les fichiers vidéo"""
-        files = filedialog.askopenfilenames(title="Sélectionner les vidéos", filetypes=[("Vidéos", "*.mp4 *.avi *.mov *.mkv"), ("Tous", "*.*")])
+        files = filedialog.askopenfilenames(
+            title="Sélectionner les vidéos", 
+            filetypes=[("Vidéos", "*.mp4 *.avi *.mov *.mkv"), ("Tous", "*.*")]
+        )
         
         if not files:
             return
@@ -290,10 +434,10 @@ class LastWarGUI:
     def detect_day_from_filename(self, filename):
         """Détecte le jour depuis le nom"""
         filename_lower = filename.lower()
-        # Vérifier d'abord 'semaine' spécifiquement
+        # Vérifier 'semaine' en premier
         if 'semaine' in filename_lower:
             return 'semaine'
-        # Puis vérifier les autres jours
+        # Puis les autres jours
         for day in self.days:
             if day in filename_lower:
                 return day
@@ -304,6 +448,8 @@ class LastWarGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title("Sélection du jour")
         dialog.geometry("300x150")
+        dialog.transient(self.root)
+        dialog.grab_set()
         
         ttk.Label(dialog, text=f"Fichier: {filename}\nJour:").pack(pady=10)
         
@@ -378,6 +524,7 @@ class LastWarGUI:
         
         resized = self.current_panorama.resize((new_w, new_h), Image.Resampling.LANCZOS)
         
+        # Ajouter les lignes de coupe
         if self.crop_top.get() > 0 or self.crop_bottom.get() > 0:
             draw = ImageDraw.Draw(resized)
             if self.crop_top.get() > 0:
@@ -399,245 +546,6 @@ class LastWarGUI:
     def set_zoom(self, value):
         """Applique le zoom"""
         self.display_image_in_canvas()
-    
-    def preview_concatenation(self):
-        """Aperçu de la concaténation avec support du zoom"""
-        if not self.panorama_files:
-            messagebox.showwarning("Aucun panorama", "Veuillez d'abord charger des panoramas")
-            return
-            
-        self.log("Génération de l'aperçu du tableau final...")
-        
-        images = []
-        for day in self.days:
-            if day in self.panorama_files:
-                img = Image.open(self.panorama_files[day])
-                images.append(img)
-                
-        if not images:
-            return
-            
-        max_height = max(img.height for img in images)
-        total_width = sum(img.width for img in images)
-        
-        # Créer l'image résultat
-        self.concat_result_image = Image.new('RGBA', (total_width, max_height), (255, 255, 255, 255))
-        
-        x_offset = 0
-        for img in images:
-            self.concat_result_image.paste(img, (x_offset, 0))
-            x_offset += img.width
-            
-        # Mettre à jour les infos si le label existe
-        if hasattr(self, 'concat_info_label') and self.concat_info_label:
-            self.concat_info_label.config(text=f"Taille: {total_width}x{max_height}px\n{len(images)} images")
-        
-        # Afficher avec le zoom actuel
-        self.display_concat_image()
-        
-        self.log(f"✅ Aperçu généré: {len(images)} images, {total_width}x{max_height}px")
-    
-    def display_concat_image(self):
-        """Affiche l'image de concaténation avec le zoom actuel"""
-        if not self.concat_result_image:
-            return
-            
-        # Utiliser le zoom par défaut si le scale n'existe pas encore
-        if hasattr(self, 'concat_zoom_scale') and self.concat_zoom_scale:
-            zoom = self.concat_zoom_scale.get() / 100.0
-        else:
-            zoom = 1.0
-        
-        orig_width, orig_height = self.concat_result_image.size
-        new_width = int(orig_width * zoom)
-        new_height = int(orig_height * zoom)
-        
-        # Redimensionner l'image
-        resized = self.concat_result_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
-        # Convertir en PhotoImage
-        self.concat_photo = ImageTk.PhotoImage(resized)
-        
-        # Afficher dans le canvas
-        self.concat_canvas.delete("all")
-        self.concat_canvas.create_image(0, 0, anchor='nw', image=self.concat_photo)
-        self.concat_canvas.config(scrollregion=self.concat_canvas.bbox("all"))
-    
-    def set_concat_zoom(self, value):
-        """Applique le zoom depuis le slider"""
-        if self.concat_result_image:
-            self.display_concat_image()
-    
-    def zoom_concat_image(self, event):
-        """Zoom avec la molette de la souris"""
-        if not self.concat_result_image:
-            return
-            
-        # Déterminer la direction du zoom
-        if event.delta > 0:
-            new_zoom = min(200, self.concat_zoom_scale.get() + 10)
-        else:
-            new_zoom = max(10, self.concat_zoom_scale.get() - 10)
-            
-        self.concat_zoom_scale.set(new_zoom)
-        self.display_concat_image()
-    
-    def fit_concat_to_window(self):
-        """Ajuste l'image de concaténation à la fenêtre"""
-        if not self.concat_result_image:
-            messagebox.showinfo("Info", "Veuillez d'abord générer un aperçu")
-            return
-            
-        # Obtenir la taille du canvas
-        self.concat_canvas.update_idletasks()
-        canvas_width = self.concat_canvas.winfo_width()
-        canvas_height = self.concat_canvas.winfo_height()
-        
-        if canvas_width > 1 and canvas_height > 1:
-            # Calculer le zoom optimal
-            img_width, img_height = self.concat_result_image.size
-            zoom_w = (canvas_width / img_width) * 100
-            zoom_h = (canvas_height / img_height) * 100
-            
-            # Utiliser le plus petit zoom pour que tout rentre
-            optimal_zoom = min(zoom_w, zoom_h, 100)
-            
-            self.concat_zoom_scale.set(int(optimal_zoom))
-            self.display_concat_image()
-            self.log(f"🔍 Zoom ajusté à {int(optimal_zoom)}%")
-    
-    def start_concat_pan(self, event):
-        """Démarre le déplacement dans le canvas de concaténation"""
-        self.concat_canvas.scan_mark(event.x, event.y)
-    
-    def pan_concat_image(self, event):
-        """Déplace l'image dans le canvas de concaténation"""
-        self.concat_canvas.scan_dragto(event.x, event.y, gain=1)
-    
-    def set_concat_zoom(self, value):
-        """Applique le zoom depuis le slider"""
-        if self.concat_result_image:
-            self.display_concat_image()
-    
-    def zoom_concat_image(self, event):
-        """Zoom avec la molette de la souris"""
-        if not self.concat_result_image:
-            return
-            
-        # Déterminer la direction du zoom
-        if event.delta > 0:
-            new_zoom = min(200, self.concat_zoom_scale.get() + 10)
-        else:
-            new_zoom = max(10, self.concat_zoom_scale.get() - 10)
-            
-        self.concat_zoom_scale.set(new_zoom)
-        self.display_concat_image()
-    
-    def fit_concat_to_window(self):
-        """Ajuste l'image de concaténation à la fenêtre"""
-        if not self.concat_result_image:
-            messagebox.showinfo("Info", "Veuillez d'abord générer un aperçu")
-            return
-            
-        # Obtenir la taille du canvas
-        self.concat_canvas.update_idletasks()
-        canvas_width = self.concat_canvas.winfo_width()
-        canvas_height = self.concat_canvas.winfo_height()
-        
-        if canvas_width > 1 and canvas_height > 1:
-            # Calculer le zoom optimal
-            img_width, img_height = self.concat_result_image.size
-            zoom_w = (canvas_width / img_width) * 100
-            zoom_h = (canvas_height / img_height) * 100
-            
-            # Utiliser le plus petit zoom pour que tout rentre
-            optimal_zoom = min(zoom_w, zoom_h, 100)
-            
-            self.concat_zoom_scale.set(int(optimal_zoom))
-            self.display_concat_image()
-            self.log(f"🔍 Zoom ajusté à {int(optimal_zoom)}%")
-    
-    def start_concat_pan(self, event):
-        """Démarre le déplacement dans le canvas de concaténation"""
-        self.concat_canvas.scan_mark(event.x, event.y)
-    
-    def pan_concat_image(self, event):
-        """Déplace l'image dans le canvas de concaténation"""
-        self.concat_canvas.scan_dragto(event.x, event.y, gain=1)
-    
-    def save_final_table(self):
-        """Sauvegarde le tableau final"""
-        if not self.panorama_files:
-            messagebox.showwarning("Aucun panorama", "Veuillez charger des panoramas")
-            return
-            
-        output_file = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG", "*.png")])
-        
-        if not output_file:
-            return
-            
-        use_concat = messagebox.askyesno("Méthode", "Utiliser concat.py?")
-        
-        if use_concat:
-            folder = Path(list(self.panorama_files.values())[0]).parent
-            cmd = [sys.executable, 'concat.py', str(folder)]
-            try:
-                subprocess.run(cmd, check=True)
-                self.log("Tableau créé avec concat.py")
-                messagebox.showinfo("Succès", "Tableau sauvegardé")
-            except:
-                messagebox.showerror("Erreur", "Erreur lors de la création")
-        else:
-            self.generate_final_table(output_file)
-    
-    def generate_final_table(self, output_file):
-        """Génère directement le tableau (exclut 'semaine')"""
-        images = []
-        headers = []
-        
-        for day in self.days:  # Utilise self.days qui n'inclut PAS 'semaine'
-            if day in self.panorama_files:
-                img = Image.open(self.panorama_files[day])
-                images.append(img)
-                headers.append(day.capitalize())
-                
-        if not images:
-            return
-            
-        max_height = max(img.height for img in images)
-        total_width = sum(img.width for img in images)
-        header_height = 50
-        
-        result = Image.new('RGBA', (total_width, max_height + header_height), (255, 255, 255, 255))
-        
-        header_img = Image.new('RGBA', (total_width, header_height), (240, 240, 240, 255))
-        draw = ImageDraw.Draw(header_img)
-        
-        try:
-            font = ImageFont.truetype("arial.ttf", 24)
-        except:
-            font = None
-            
-        x_offset = 0
-        for img, header in zip(images, headers):
-            text_width = len(header) * 10
-            x = x_offset + (img.width - text_width) // 2
-            y = 13
-            draw.text((x, y), header, fill='black', font=font)
-            x_offset += img.width
-            
-        result.paste(header_img, (0, 0))
-        
-        x_offset = 0
-        for img in images:
-            result.paste(img, (x_offset, header_height))
-            x_offset += img.width
-            
-        result.save(output_file)
-        self.log(f"Tableau sauvegardé: {output_file}")
-        if 'semaine' in self.panorama_files:
-            self.log("ℹ️ Note: 'semaine.png' n'a pas été inclus dans le tableau final")
-        messagebox.showinfo("Succès", "Tableau sauvegardé (sans semaine)")
 
 def main():
     root = tk.Tk()
