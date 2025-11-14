@@ -17,6 +17,7 @@ import re
 # Importer les modules
 from video_processor import VideoProcessor
 from panorama_editor import PanoramaEditor
+from video_capture import VideoCapture
 
 class LastWarGUI:
     def __init__(self, root):
@@ -34,6 +35,7 @@ class LastWarGUI:
         self.enable_ocr = tk.BooleanVar(value=False)
         self.update_queue = queue.Queue()
         self.final_statuses = {}
+        self.current_capture_output = None
         
         # Configuration
         self.days = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi']
@@ -42,6 +44,7 @@ class LastWarGUI:
         # Modules
         self.video_processor = VideoProcessor(self)
         self.panorama_editor = PanoramaEditor(self)
+        self.video_capture = VideoCapture(self)
         
         self.setup_ui()
         self.check_update_queue()
@@ -50,6 +53,10 @@ class LastWarGUI:
         """Crée l'interface utilisateur"""
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.capture_tab = ttk.Frame(notebook)
+        notebook.add(self.capture_tab, text="0. Capturer vidéos")
+        self.setup_capture_tab()
         
         self.video_tab = ttk.Frame(notebook)
         notebook.add(self.video_tab, text="1. Vidéos → Panoramas")
@@ -65,6 +72,122 @@ class LastWarGUI:
         
         self.status_bar = ttk.Label(self.root, text="Prêt", relief=tk.SUNKEN)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    
+    def setup_capture_tab(self):
+        """Onglet 0 - Capture vidéo"""
+        # Frame principal
+        main_frame = ttk.Frame(self.capture_tab)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # === INFO ===
+        info_frame = ttk.LabelFrame(main_frame, text="ℹ️ Comment ça marche")
+        info_frame.pack(fill='x', pady=5)
+        
+        info_text = """1. Configurez le nom du fichier et le dossier de sortie ci-dessous
+2. Cliquez sur 'Ouvrir l'overlay de capture'
+3. Tracez un cadre avec la souris (il restera visible)
+4. Utilisez les boutons flottants sous le cadre pour contrôler l'enregistrement"""
+        
+        ttk.Label(info_frame, text=info_text, justify=tk.LEFT, font=('Arial', 9)).pack(padx=10, pady=10)
+        
+        # === DOSSIER DE SORTIE ===
+        folder_frame = ttk.LabelFrame(main_frame, text="📁 Dossier de sortie")
+        folder_frame.pack(fill='x', pady=5)
+        
+        folder_inner = ttk.Frame(folder_frame)
+        folder_inner.pack(fill='x', padx=10, pady=10)
+        
+        self.output_folder_var = tk.StringVar(value=str(Path.cwd()))
+        ttk.Entry(folder_inner, textvariable=self.output_folder_var, state='readonly').pack(side=tk.LEFT, fill='x', expand=True, padx=(0, 5))
+        ttk.Button(folder_inner, text="Parcourir...", command=self.select_output_folder).pack(side=tk.LEFT)
+        
+        # === NOM DU FICHIER ===
+        naming_frame = ttk.LabelFrame(main_frame, text="📝 Nom du fichier")
+        naming_frame.pack(fill='x', pady=5)
+        
+        naming_inner = ttk.Frame(naming_frame)
+        naming_inner.pack(fill='x', padx=10, pady=10)
+        
+        # Type de nommage
+        self.naming_mode = tk.StringVar(value="preset")
+        
+        preset_radio = ttk.Radiobutton(naming_inner, text="Jour prédéfini:", 
+                                       variable=self.naming_mode, value="preset",
+                                       command=self.update_naming_mode)
+        preset_radio.grid(row=0, column=0, sticky='w', pady=5)
+        
+        self.day_combo_capture = ttk.Combobox(naming_inner, values=self.all_days, 
+                                               state='readonly', width=15)
+        self.day_combo_capture.current(0)
+        self.day_combo_capture.grid(row=0, column=1, padx=10, pady=5)
+        
+        custom_radio = ttk.Radiobutton(naming_inner, text="Nom personnalisé:", 
+                                       variable=self.naming_mode, value="custom",
+                                       command=self.update_naming_mode)
+        custom_radio.grid(row=1, column=0, sticky='w', pady=5)
+        
+        self.custom_name_entry = ttk.Entry(naming_inner, width=30)
+        self.custom_name_entry.grid(row=1, column=1, padx=10, pady=5, sticky='ew')
+        self.custom_name_entry.insert(0, "capture")
+        self.custom_name_entry.config(state='disabled')
+        
+        ttk.Label(naming_inner, text=".mp4").grid(row=1, column=2)
+        
+        naming_inner.columnconfigure(1, weight=1)
+        
+        # Aperçu du nom
+        self.filename_preview = ttk.Label(naming_frame, text="📄 Fichier: lundi.mp4", 
+                                          foreground="blue")
+        self.filename_preview.pack(pady=5)
+        
+        # === RÉGLAGES ===
+        settings_frame = ttk.LabelFrame(main_frame, text="⚙️ Réglages")
+        settings_frame.pack(fill='x', pady=5)
+        
+        settings_inner = ttk.Frame(settings_frame)
+        settings_inner.pack(fill='x', padx=10, pady=10)
+        
+        ttk.Label(settings_inner, text="FPS:").pack(side=tk.LEFT, padx=5)
+        self.fps_var = tk.IntVar(value=30)
+        fps_spinner = ttk.Spinbox(settings_inner, from_=10, to=60, textvariable=self.fps_var, 
+                                   width=10, command=self.update_fps)
+        fps_spinner.pack(side=tk.LEFT, padx=5)
+        
+        # === BOUTON PRINCIPAL ===
+        control_frame = ttk.LabelFrame(main_frame, text="🎬 Lancer la capture")
+        control_frame.pack(fill='x', pady=5)
+        
+        info_text = """Cliquez sur le bouton ci-dessous pour ouvrir l'overlay de capture.
+
+Vous pourrez alors :
+1. Tracer le cadre de capture avec la souris
+2. Utiliser les boutons flottants pour démarrer/arrêter/annuler"""
+        
+        ttk.Label(control_frame, text=info_text, justify=tk.LEFT, foreground="gray").pack(pady=10)
+        
+        self.capture_button = tk.Button(
+            control_frame, text="🎯 Ouvrir l'overlay de capture", 
+            command=self.open_capture_overlay,
+            bg='#4CAF50', fg='white', font=('Arial', 12, 'bold'),
+            padx=30, pady=15, cursor='hand2'
+        )
+        self.capture_button.pack(pady=10)
+        
+        # === CONSEILS ===
+        tips_frame = ttk.LabelFrame(main_frame, text="💡 Conseils")
+        tips_frame.pack(fill='x', pady=5)
+        
+        tips_text = """1. Sélectionnez d'abord la zone à capturer
+2. Choisissez le nom du fichier (jour ou personnalisé)
+3. Cliquez sur 'Démarrer l'enregistrement'
+4. Dans le jeu, scrollez de haut en bas
+5. Cliquez sur 'Arrêter et sauvegarder'"""
+        
+        ttk.Label(tips_frame, text=tips_text, justify=tk.LEFT, font=('Arial', 9)).pack(padx=10, pady=10)
+        
+        # Mettre à jour les callbacks
+        self.day_combo_capture.bind('<<ComboboxSelected>>', lambda e: self.update_filename_preview())
+        self.custom_name_entry.bind('<KeyRelease>', lambda e: self.update_filename_preview())
         
     def setup_video_tab(self):
         """Onglet 1 avec traitement parallèle"""
@@ -474,6 +597,8 @@ Note: Le fichier 'semaine.png' ne sera PAS inclus dans le tableau final.
         self.day_combo['values'] = available_days
         if available_days and not self.day_combo.get():
             self.day_combo.current(0)
+            # Charger automatiquement le panorama sélectionné
+            self.load_panorama_for_edit()
         if available_days:
             self.log(f"🔄 Onglet 2 mis à jour: {len(available_days)} panorama(s) disponible(s) ({', '.join(available_days)})")
     
@@ -550,6 +675,110 @@ Note: Le fichier 'semaine.png' ne sera PAS inclus dans le tableau final.
     def set_zoom(self, value):
         """Applique le zoom"""
         self.display_image_in_canvas()
+    
+    # ===== MÉTHODES POUR L'ONGLET CAPTURE =====
+    
+    def select_output_folder(self):
+        """Sélectionne le dossier de sortie pour les captures"""
+        folder = filedialog.askdirectory(title="Sélectionner le dossier de sortie")
+        if folder:
+            self.output_folder_var.set(folder)
+            self.video_capture.set_output_folder(folder)
+            self.update_filename_preview()
+    
+    def update_naming_mode(self):
+        """Met à jour le mode de nommage (preset/custom)"""
+        if self.naming_mode.get() == "preset":
+            self.day_combo_capture.config(state='readonly')
+            self.custom_name_entry.config(state='disabled')
+        else:
+            self.day_combo_capture.config(state='disabled')
+            self.custom_name_entry.config(state='normal')
+        self.update_filename_preview()
+    
+    def update_filename_preview(self):
+        """Met à jour l'aperçu du nom de fichier"""
+        if self.naming_mode.get() == "preset":
+            filename = f"{self.day_combo_capture.get()}.mp4"
+        else:
+            custom = self.custom_name_entry.get().strip()
+            if not custom:
+                custom = "capture"
+            # Nettoyer le nom (enlever caractères invalides)
+            import re
+            custom = re.sub(r'[<>:"/\\|?*]', '', custom)
+            filename = f"{custom}.mp4"
+        
+        folder = self.output_folder_var.get()
+        full_path = Path(folder) / filename
+        self.filename_preview.config(text=f"📄 Fichier: {filename}\n📁 {full_path}")
+    
+    def update_fps(self):
+        """Met à jour le FPS de capture"""
+        self.video_capture.set_fps(self.fps_var.get())
+    
+    def open_capture_overlay(self):
+        """Ouvre l'overlay de capture avec cadre et boutons flottants"""
+        # Obtenir le nom du fichier
+        if self.naming_mode.get() == "preset":
+            filename = f"{self.day_combo_capture.get()}.mp4"
+        else:
+            custom = self.custom_name_entry.get().strip()
+            if not custom:
+                messagebox.showwarning("Nom vide", "Veuillez entrer un nom de fichier")
+                return
+            import re
+            custom = re.sub(r'[<>:"/\\|?*]', '', custom)
+            filename = f"{custom}.mp4"
+        
+        output_path = Path(self.output_folder_var.get()) / filename
+        
+        # Vérifier si le fichier existe
+        if output_path.exists():
+            result = messagebox.askyesno("Fichier existant", 
+                                         f"Le fichier {filename} existe déjà.\nVoulez-vous le remplacer?")
+            if not result:
+                return
+        
+        # Sauvegarder le chemin de sortie
+        self.current_capture_output = output_path
+        
+        # Ouvrir l'overlay
+        self.video_capture.select_region()
+        self.log(f"📐 Overlay de capture ouvert pour: {filename}")
+    
+    def on_capture_start(self, region):
+        """Callback quand la capture démarre depuis l'overlay"""
+        self.log(f"📐 Zone sélectionnée: {region[2]}x{region[3]} à ({region[0]}, {region[1]})")
+        
+        # Démarrer l'enregistrement
+        if self.video_capture.start_recording(self.current_capture_output):
+            self.log(f"🔴 Enregistrement en cours: {self.current_capture_output.name}")
+        else:
+            self.log(f"❌ Impossible de démarrer l'enregistrement")
+    
+    def on_capture_stop(self):
+        """Callback quand la capture s'arrête depuis l'overlay"""
+        self.log(f"⏹️ Enregistrement arrêté et sauvegardé")
+        
+        # Ajouter la vidéo à l'onglet 1 si c'est un jour
+        if self.naming_mode.get() == "preset":
+            day = self.day_combo_capture.get()
+            if day in self.all_days and self.current_capture_output.exists():
+                self.video_files[day] = self.current_capture_output
+                # Ajouter à la liste si pas déjà présent
+                already_in_list = False
+                for item in self.video_tree.get_children():
+                    if self.video_tree.item(item)['values'][0] == day:
+                        already_in_list = True
+                        break
+                if not already_in_list:
+                    self.video_tree.insert('', 'end', values=(day, self.current_capture_output.name, "En attente", ""))
+                self.log(f"📹 Vidéo ajoutée à l'onglet 1: {day}")
+    
+    def on_capture_cancel(self):
+        """Callback quand la capture est annulée depuis l'overlay"""
+        self.log(f"❌ Capture annulée")
 
 def main():
     root = tk.Tk()
