@@ -36,6 +36,7 @@ class LastWarGUI:
         self.update_queue = queue.Queue()
         self.final_statuses = {}
         self.current_capture_output = None
+        self.crop_drag_start = None  # Position de départ du drag
         
         # Configuration
         self.days = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi']
@@ -281,18 +282,23 @@ Vous pourrez alors :
         crop_frame = ttk.LabelFrame(control_panel, text="Recadrage")
         crop_frame.pack(fill='x', pady=10)
         
-        ttk.Label(crop_frame, text="Couper en bas:").grid(row=0, column=0, padx=5, pady=5)
-        self.crop_bottom = tk.IntVar(value=0)
-        ttk.Spinbox(crop_frame, from_=0, to=2000, increment=10, textvariable=self.crop_bottom, width=10, command=self.update_crop_preview).grid(row=0, column=1, padx=5, pady=5)
+        # Info d'utilisation
+        info_text = "Clic simple: ligne basse\nClic+drag: zone à enlever"
+        ttk.Label(crop_frame, text=info_text, foreground="blue", 
+                 font=('Arial', 8), justify=tk.LEFT).grid(row=0, column=0, columnspan=2, pady=5)
         
-        ttk.Label(crop_frame, text="Couper en haut:").grid(row=1, column=0, padx=5, pady=5)
+        ttk.Label(crop_frame, text="Couper en bas:").grid(row=1, column=0, padx=5, pady=5, sticky='w')
+        self.crop_bottom = tk.IntVar(value=0)
+        ttk.Spinbox(crop_frame, from_=0, to=20000, increment=10, textvariable=self.crop_bottom, width=10, command=self.update_crop_preview).grid(row=1, column=1, padx=5, pady=5)
+        
+        ttk.Label(crop_frame, text="Couper en haut:").grid(row=2, column=0, padx=5, pady=5, sticky='w')
         self.crop_top = tk.IntVar(value=0)
-        ttk.Spinbox(crop_frame, from_=0, to=2000, increment=10, textvariable=self.crop_top, width=10, command=self.update_crop_preview).grid(row=1, column=1, padx=5, pady=5)
+        ttk.Spinbox(crop_frame, from_=0, to=20000, increment=10, textvariable=self.crop_top, width=10, command=self.update_crop_preview).grid(row=2, column=1, padx=5, pady=5)
         
         # Boutons d'action
-        ttk.Button(crop_frame, text="⬇️ Aller en bas", command=self.panorama_editor.scroll_to_bottom).grid(row=2, column=0, pady=3)
-        ttk.Button(crop_frame, text="⬆️ Aller en haut", command=self.panorama_editor.scroll_to_top).grid(row=2, column=1, pady=3)
-        ttk.Button(crop_frame, text="📏 Ajuster à la fenêtre", command=self.panorama_editor.fit_to_window).grid(row=3, column=0, columnspan=2, pady=3)
+        ttk.Button(crop_frame, text="⬇️ Aller en bas", command=self.panorama_editor.scroll_to_bottom).grid(row=3, column=0, pady=3)
+        ttk.Button(crop_frame, text="⬆️ Aller en haut", command=self.panorama_editor.scroll_to_top).grid(row=3, column=1, pady=3)
+        ttk.Button(crop_frame, text="📏 Ajuster à la fenêtre", command=self.panorama_editor.fit_to_window).grid(row=4, column=0, columnspan=2, pady=3)
         
         # Zoom
         zoom_frame = ttk.LabelFrame(control_panel, text="Zoom")
@@ -314,7 +320,10 @@ Vous pourrez alors :
         self.info_label.pack(pady=10)
         
         # Bindings
-        self.edit_canvas.bind("<Button-3>", self.panorama_editor.set_crop_line)
+        # Bindings
+        self.edit_canvas.bind("<ButtonPress-3>", self.panorama_editor.start_crop_drag)
+        self.edit_canvas.bind("<B3-Motion>", self.panorama_editor.update_crop_drag)
+        self.edit_canvas.bind("<ButtonRelease-3>", self.panorama_editor.end_crop_drag)
         self.edit_canvas.bind("<MouseWheel>", self.panorama_editor.zoom_image)
         self.edit_canvas.bind("<Button-1>", self.panorama_editor.start_pan)
         self.edit_canvas.bind("<B1-Motion>", self.panorama_editor.pan_image)
@@ -633,6 +642,7 @@ Note: Le fichier 'semaine.png' ne sera PAS inclus dans le tableau final.
         
         self.crop_bottom.set(0)
         self.crop_top.set(0)
+        self.crop_drag_start = None
         
         self.display_image_in_canvas()
         
@@ -656,12 +666,28 @@ Note: Le fichier 'semaine.png' ne sera PAS inclus dans le tableau final.
         # Ajouter les lignes de coupe
         if self.crop_top.get() > 0 or self.crop_bottom.get() > 0:
             draw = ImageDraw.Draw(resized)
-            if self.crop_top.get() > 0:
-                y = int(self.crop_top.get() * zoom)
-                draw.line([(0, y), (new_w, y)], fill='red', width=2)
-            if self.crop_bottom.get() > 0:
+            
+            if self.crop_top.get() > 0 and self.crop_bottom.get() > 0:
+                # Deux lignes : on enlève ce qui est ENTRE
+                y_top = int(self.crop_top.get() * zoom)
+                y_bottom = new_h - int(self.crop_bottom.get() * zoom)
+                
+                # Lignes rouges
+                draw.line([(0, y_top), (new_w, y_top)], fill='red', width=3)
+                draw.line([(0, y_bottom), (new_w, y_bottom)], fill='red', width=3)
+                
+                # Zone à supprimer UNIQUEMENT ENTRE les deux lignes
+                for i in range(y_top, y_bottom, 3):
+                    draw.line([(0, i), (new_w, i)], fill=(255, 0, 0, 80), width=1)
+            
+            elif self.crop_bottom.get() > 0:
+                # Une seule ligne en bas : coupe tout en dessous
                 y = new_h - int(self.crop_bottom.get() * zoom)
-                draw.line([(0, y), (new_w, y)], fill='red', width=2)
+                draw.line([(0, y), (new_w, y)], fill='red', width=3)
+                
+                # Zone à supprimer en bas
+                for i in range(y, new_h, 3):
+                    draw.line([(0, i), (new_w, i)], fill=(255, 0, 0, 80), width=1)
         
         self.photo = ImageTk.PhotoImage(resized)
         self.edit_canvas.delete("all")
@@ -671,6 +697,7 @@ Note: Le fichier 'semaine.png' ne sera PAS inclus dans le tableau final.
     def update_crop_preview(self):
         """Met à jour l'aperçu"""
         self.display_image_in_canvas()
+    
     
     def set_zoom(self, value):
         """Applique le zoom"""

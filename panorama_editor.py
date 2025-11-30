@@ -12,8 +12,8 @@ class PanoramaEditor:
     def __init__(self, parent):
         self.parent = parent
     
-    def set_crop_line(self, event):
-        """Définit la ligne de coupe avec un clic droit"""
+    def start_crop_drag(self, event):
+        """Démarre le drag pour définir une zone à enlever"""
         if not self.parent.current_panorama:
             return
         
@@ -21,15 +21,76 @@ class PanoramaEditor:
         zoom = self.parent.zoom_scale.get() / 100.0
         img_y = int(canvas_y / zoom)
         
-        img_height = self.parent.current_panorama.size[1]
-        crop_amount = img_height - img_y
+        # Sauvegarder le point de départ
+        self.parent.crop_drag_start = img_y
+    
+    def update_crop_drag(self, event):
+        """Met à jour l'aperçu pendant le drag"""
+        if not self.parent.current_panorama or self.parent.crop_drag_start is None:
+            return
         
-        if 0 < crop_amount < img_height:
-            self.parent.crop_bottom.set(min(crop_amount, 2000))
-            self.parent.display_image_in_canvas()
-            self.parent.log(f"✂️ Ligne de coupe définie par clic droit")
-            self.parent.log(f"   Position: {img_y}px depuis le haut")
-            self.parent.log(f"   Coupe: {crop_amount}px depuis le bas")
+        canvas_y = self.parent.edit_canvas.canvasy(event.y)
+        zoom = self.parent.zoom_scale.get() / 100.0
+        img_y_current = int(canvas_y / zoom)
+        img_y_start = self.parent.crop_drag_start
+        
+        img_height = self.parent.current_panorama.size[1]
+        
+        # Calculer les positions temporaires
+        y_top = min(img_y_start, img_y_current)
+        y_bottom = max(img_y_start, img_y_current)
+        
+        # Mettre à jour l'aperçu (pas de limite!)
+        self.parent.crop_top.set(y_top)
+        crop_bottom_amount = img_height - y_bottom
+        self.parent.crop_bottom.set(crop_bottom_amount)
+        
+        self.parent.display_image_in_canvas()
+        self.parent.edit_canvas.update_idletasks()  # Forcer le rafraîchissement
+    
+    def end_crop_drag(self, event):
+        """Termine le drag et définit la zone à enlever"""
+        if not self.parent.current_panorama or self.parent.crop_drag_start is None:
+            return
+        
+        canvas_y = self.parent.edit_canvas.canvasy(event.y)
+        zoom = self.parent.zoom_scale.get() / 100.0
+        img_y_end = int(canvas_y / zoom)
+        img_y_start = self.parent.crop_drag_start
+        
+        img_height = self.parent.current_panorama.size[1]
+        
+        # Détecter si c'est un clic simple ou un drag
+        drag_distance = abs(img_y_end - img_y_start)
+        
+        if drag_distance < 10:  # Clic simple (moins de 10px de mouvement)
+            # Mode simple : coupe en bas
+            crop_amount = img_height - img_y_end
+            
+            if 0 < crop_amount < img_height:
+                self.parent.crop_bottom.set(crop_amount)
+                self.parent.crop_top.set(0)
+                self.parent.display_image_in_canvas()
+                self.parent.log(f"✂️ Ligne de coupe basse définie")
+                self.parent.log(f"   Position: {img_y_end}px depuis le haut")
+                self.parent.log(f"   Coupe: {crop_amount}px depuis le bas")
+        
+        else:  # Drag détecté : enlever la zone entre les deux lignes
+            # Assurer que start < end
+            y_top = min(img_y_start, img_y_end)
+            y_bottom = max(img_y_start, img_y_end)
+            
+            if y_top > 0 and y_bottom < img_height:
+                self.parent.crop_top.set(y_top)
+                crop_bottom_amount = img_height - y_bottom
+                self.parent.crop_bottom.set(crop_bottom_amount)
+                self.parent.display_image_in_canvas()
+                self.parent.log(f"✂️ Zone à enlever définie")
+                self.parent.log(f"   Haut: {y_top}px, Bas: {y_bottom}px")
+                self.parent.log(f"   Hauteur à enlever: {y_bottom - y_top}px")
+        
+        # Réinitialiser
+        self.parent.crop_drag_start = None
     
     def scroll_to_bottom(self):
         """Fait défiler jusqu'en bas"""
@@ -79,26 +140,71 @@ class PanoramaEditor:
             
         w, h = self.parent.current_panorama.size
         top = self.parent.crop_top.get()
-        bottom = h - self.parent.crop_bottom.get()
+        bottom_px = self.parent.crop_bottom.get()
         
-        if top >= bottom:
-            self.parent.log("❌ Paramètres de recadrage invalides (top >= bottom)")
-            messagebox.showerror("Erreur", "Paramètres de recadrage invalides")
+        if top > 0 and bottom_px > 0:
+            # Deux lignes : enlever ce qui est ENTRE
+            y_top = top
+            y_bottom = h - bottom_px
+            
+            if y_top >= y_bottom:
+                self.parent.log("❌ Zone invalide (lignes trop proches)")
+                messagebox.showerror("Erreur", "Zone invalide")
+                return
+            
+            # Sauvegarder avant
+            old_height = h
+            
+            # Découper en deux parties et les recoller
+            top_part = self.parent.current_panorama.crop((0, 0, w, y_top))
+            bottom_part = self.parent.current_panorama.crop((0, y_bottom, w, h))
+            
+            # Créer nouvelle image
+            new_height = top_part.height + bottom_part.height
+            from PIL import Image
+            new_image = Image.new('RGB', (w, new_height))
+            new_image.paste(top_part, (0, 0))
+            new_image.paste(bottom_part, (0, top_part.height))
+            
+            self.parent.current_panorama = new_image
+            self.parent.display_image_in_canvas()
+            
+            w, h = self.parent.current_panorama.size
+            self.parent.info_label.config(text=f"Taille: {w}x{h}px")
+            
+            pixels_removed = old_height - h
+            self.parent.log(f"✂️ Zone du milieu enlevée: {self.parent.current_day}")
+            self.parent.log(f"   Enlevé de {y_top}px à {y_bottom}px (avant crop)")
+            self.parent.log(f"   {pixels_removed}px supprimés (nouvelle hauteur: {h}px)")
+        
+        elif bottom_px > 0:
+            # Une seule ligne : coupe en bas (mode classique)
+            bottom = h - bottom_px
+            
+            if bottom <= 0:
+                self.parent.log("❌ Paramètres invalides")
+                messagebox.showerror("Erreur", "Paramètres invalides")
+                return
+            
+            old_height = h
+            self.parent.current_panorama = self.parent.current_panorama.crop((0, 0, w, bottom))
+            self.parent.display_image_in_canvas()
+            
+            w, h = self.parent.current_panorama.size
+            self.parent.info_label.config(text=f"Taille: {w}x{h}px")
+            
+            pixels_removed = old_height - h
+            self.parent.log(f"✂️ Recadrage appliqué (bas): {self.parent.current_day}")
+            self.parent.log(f"   {pixels_removed}px supprimés (nouvelle hauteur: {h}px)")
+        
+        else:
+            self.parent.log("ℹ️  Aucune ligne définie")
             return
         
-        # Sauvegarder les dimensions avant
-        old_height = h
-            
-        # Appliquer le recadrage
-        self.parent.current_panorama = self.parent.current_panorama.crop((0, top, w, bottom))
-        self.parent.display_image_in_canvas()
-        
-        w, h = self.parent.current_panorama.size
-        self.parent.info_label.config(text=f"Taille: {w}x{h}px")
-        
-        pixels_removed = old_height - h
-        self.parent.log(f"✂️ Recadrage appliqué: {self.parent.current_day}")
-        self.parent.log(f"   {pixels_removed}px supprimés (nouvelle hauteur: {h}px)")
+        # Réinitialiser
+        self.parent.crop_top.set(0)
+        self.parent.crop_bottom.set(0)
+        self.parent.crop_drag_start = None
     
     def save_edited_panorama(self):
         """Sauvegarde le panorama édité SANS POPUP de confirmation"""
@@ -134,6 +240,7 @@ class PanoramaEditor:
         self.parent.current_panorama = self.parent.original_panorama.copy()
         self.parent.crop_top.set(0)
         self.parent.crop_bottom.set(0)
+        self.parent.crop_drag_start = None
         self.parent.display_image_in_canvas()
         
         w, h = self.parent.current_panorama.size
