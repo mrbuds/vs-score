@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
 Module 2 : Édition des panoramas
-Version améliorée: SANS POPUPS de confirmation
+Version améliorée avec meilleure gestion d'erreurs
 """
 
 from PIL import Image, ImageDraw
-import numpy as np
 from tkinter import messagebox
 
+from config import config
+
+
 class PanoramaEditor:
+    """Éditeur de panoramas avec fonctions de recadrage"""
+    
     def __init__(self, parent):
         self.parent = parent
     
@@ -21,7 +25,6 @@ class PanoramaEditor:
         zoom = self.parent.zoom_scale.get() / 100.0
         img_y = int(canvas_y / zoom)
         
-        # Sauvegarder le point de départ
         self.parent.crop_drag_start = img_y
     
     def update_crop_drag(self, event):
@@ -40,13 +43,13 @@ class PanoramaEditor:
         y_top = min(img_y_start, img_y_current)
         y_bottom = max(img_y_start, img_y_current)
         
-        # Mettre à jour l'aperçu (pas de limite!)
+        # Mettre à jour l'aperçu
         self.parent.crop_top.set(y_top)
         crop_bottom_amount = img_height - y_bottom
         self.parent.crop_bottom.set(crop_bottom_amount)
         
         self.parent.display_image_in_canvas()
-        self.parent.edit_canvas.update_idletasks()  # Forcer le rafraîchissement
+        self.parent.edit_canvas.update_idletasks()
     
     def end_crop_drag(self, event):
         """Termine le drag et définit la zone à enlever"""
@@ -60,11 +63,11 @@ class PanoramaEditor:
         
         img_height = self.parent.current_panorama.size[1]
         
-        # Détecter si c'est un clic simple ou un drag
+        # Détecter clic simple vs drag
         drag_distance = abs(img_y_end - img_y_start)
         
-        if drag_distance < 10:  # Clic simple (moins de 10px de mouvement)
-            # Mode simple : coupe en bas
+        if drag_distance < 10:
+            # Clic simple : coupe en bas
             crop_amount = img_height - img_y_end
             
             if 0 < crop_amount < img_height:
@@ -74,9 +77,8 @@ class PanoramaEditor:
                 self.parent.log(f"✂️ Ligne de coupe basse définie")
                 self.parent.log(f"   Position: {img_y_end}px depuis le haut")
                 self.parent.log(f"   Coupe: {crop_amount}px depuis le bas")
-        
-        else:  # Drag détecté : enlever la zone entre les deux lignes
-            # Assurer que start < end
+        else:
+            # Drag : enlever la zone entre les deux lignes
             y_top = min(img_y_start, img_y_end)
             y_bottom = max(img_y_start, img_y_end)
             
@@ -89,7 +91,6 @@ class PanoramaEditor:
                 self.parent.log(f"   Haut: {y_top}px, Bas: {y_bottom}px")
                 self.parent.log(f"   Hauteur à enlever: {y_bottom - y_top}px")
         
-        # Réinitialiser
         self.parent.crop_drag_start = None
     
     def scroll_to_bottom(self):
@@ -126,18 +127,19 @@ class PanoramaEditor:
             zoom_w = (canvas_width / img_width) * 100
             zoom_h = (canvas_height / img_height) * 100
             
-            optimal_zoom = min(zoom_w, zoom_h, 100)
+            optimal_zoom = min(zoom_w, zoom_h, config.zoom_max)
+            optimal_zoom = max(optimal_zoom, config.zoom_min)
             
             self.parent.zoom_scale.set(int(optimal_zoom))
             self.parent.display_image_in_canvas()
             self.parent.log(f"🔍 Zoom ajusté à {int(optimal_zoom)}%")
     
     def apply_crop(self):
-        """Applique le recadrage SANS POPUP"""
+        """Applique le recadrage"""
         if not self.parent.current_panorama:
             self.parent.log("ℹ️  Aucune image chargée")
             return
-            
+        
         w, h = self.parent.current_panorama.size
         top = self.parent.crop_top.get()
         bottom_px = self.parent.crop_bottom.get()
@@ -149,54 +151,68 @@ class PanoramaEditor:
             
             if y_top >= y_bottom:
                 self.parent.log("❌ Zone invalide (lignes trop proches)")
-                messagebox.showerror("Erreur", "Zone invalide")
+                messagebox.showerror("Erreur", "Zone invalide: les lignes sont trop proches")
                 return
             
-            # Sauvegarder avant
+            if y_top < 0 or y_bottom > h:
+                self.parent.log("❌ Zone hors limites")
+                messagebox.showerror("Erreur", "Zone hors des limites de l'image")
+                return
+            
             old_height = h
             
-            # Découper en deux parties et les recoller
-            top_part = self.parent.current_panorama.crop((0, 0, w, y_top))
-            bottom_part = self.parent.current_panorama.crop((0, y_bottom, w, h))
+            try:
+                # Découper et recoller
+                top_part = self.parent.current_panorama.crop((0, 0, w, y_top))
+                bottom_part = self.parent.current_panorama.crop((0, y_bottom, w, h))
+                
+                new_height = top_part.height + bottom_part.height
+                new_image = Image.new('RGB', (w, new_height))
+                new_image.paste(top_part, (0, 0))
+                new_image.paste(bottom_part, (0, top_part.height))
+                
+                self.parent.current_panorama = new_image
+                self.parent.display_image_in_canvas()
+                
+                w, h = self.parent.current_panorama.size
+                self.parent.info_label.config(text=f"Taille: {w}x{h}px")
+                
+                pixels_removed = old_height - h
+                self.parent.log(f"✂️ Zone du milieu enlevée: {self.parent.current_day}")
+                self.parent.log(f"   Enlevé de {y_top}px à {y_bottom}px")
+                self.parent.log(f"   {pixels_removed}px supprimés (nouvelle hauteur: {h}px)")
             
-            # Créer nouvelle image
-            new_height = top_part.height + bottom_part.height
-            from PIL import Image
-            new_image = Image.new('RGB', (w, new_height))
-            new_image.paste(top_part, (0, 0))
-            new_image.paste(bottom_part, (0, top_part.height))
-            
-            self.parent.current_panorama = new_image
-            self.parent.display_image_in_canvas()
-            
-            w, h = self.parent.current_panorama.size
-            self.parent.info_label.config(text=f"Taille: {w}x{h}px")
-            
-            pixels_removed = old_height - h
-            self.parent.log(f"✂️ Zone du milieu enlevée: {self.parent.current_day}")
-            self.parent.log(f"   Enlevé de {y_top}px à {y_bottom}px (avant crop)")
-            self.parent.log(f"   {pixels_removed}px supprimés (nouvelle hauteur: {h}px)")
+            except Exception as e:
+                self.parent.log(f"❌ Erreur lors du crop: {e}")
+                messagebox.showerror("Erreur", f"Erreur lors du recadrage:\n{e}")
+                return
         
         elif bottom_px > 0:
-            # Une seule ligne : coupe en bas (mode classique)
+            # Une seule ligne : coupe en bas
             bottom = h - bottom_px
             
             if bottom <= 0:
                 self.parent.log("❌ Paramètres invalides")
-                messagebox.showerror("Erreur", "Paramètres invalides")
+                messagebox.showerror("Erreur", "La zone de coupe est trop grande")
                 return
             
             old_height = h
-            self.parent.current_panorama = self.parent.current_panorama.crop((0, 0, w, bottom))
-            self.parent.display_image_in_canvas()
             
-            w, h = self.parent.current_panorama.size
-            self.parent.info_label.config(text=f"Taille: {w}x{h}px")
+            try:
+                self.parent.current_panorama = self.parent.current_panorama.crop((0, 0, w, bottom))
+                self.parent.display_image_in_canvas()
+                
+                w, h = self.parent.current_panorama.size
+                self.parent.info_label.config(text=f"Taille: {w}x{h}px")
+                
+                pixels_removed = old_height - h
+                self.parent.log(f"✂️ Recadrage appliqué (bas): {self.parent.current_day}")
+                self.parent.log(f"   {pixels_removed}px supprimés (nouvelle hauteur: {h}px)")
             
-            pixels_removed = old_height - h
-            self.parent.log(f"✂️ Recadrage appliqué (bas): {self.parent.current_day}")
-            self.parent.log(f"   {pixels_removed}px supprimés (nouvelle hauteur: {h}px)")
-        
+            except Exception as e:
+                self.parent.log(f"❌ Erreur lors du crop: {e}")
+                messagebox.showerror("Erreur", f"Erreur lors du recadrage:\n{e}")
+                return
         else:
             self.parent.log("ℹ️  Aucune ligne définie")
             return
@@ -207,26 +223,33 @@ class PanoramaEditor:
         self.parent.crop_drag_start = None
     
     def save_edited_panorama(self):
-        """Sauvegarde le panorama édité SANS POPUP de confirmation"""
+        """Sauvegarde le panorama édité"""
         if not self.parent.current_panorama or not self.parent.current_day:
             self.parent.log("ℹ️  Aucune image à sauvegarder")
             return
         
         try:
-            # Sauvegarder directement
             output_path = self.parent.panorama_files[self.parent.current_day]
             self.parent.current_panorama.save(output_path)
             
-            # Mettre à jour l'original après sauvegarde
+            # Mettre à jour l'original
             self.parent.original_panorama = self.parent.current_panorama.copy()
             
             w, h = self.parent.current_panorama.size
             self.parent.log(f"💾 Sauvegardé: {self.parent.current_day}.png ({w}x{h}px)")
             
-            # Notification visuelle temporaire
+            # Notification visuelle
             self.parent.info_label.config(text=f"✅ Sauvegardé!\nTaille: {w}x{h}px")
             self.parent.root.after(2000, lambda: self.parent.info_label.config(text=f"Taille: {w}x{h}px"))
-            
+        
+        except PermissionError:
+            self.parent.log(f"❌ Permission refusée pour sauvegarder")
+            messagebox.showerror("Erreur", "Permission refusée pour sauvegarder le fichier")
+        
+        except IOError as e:
+            self.parent.log(f"❌ Erreur I/O: {e}")
+            messagebox.showerror("Erreur", f"Erreur d'écriture:\n{e}")
+        
         except Exception as e:
             self.parent.log(f"❌ Erreur lors de la sauvegarde: {e}")
             messagebox.showerror("Erreur", f"Impossible de sauvegarder:\n{e}")
@@ -236,7 +259,7 @@ class PanoramaEditor:
         if not self.parent.original_panorama:
             self.parent.log("ℹ️  Rien à annuler")
             return
-            
+        
         self.parent.current_panorama = self.parent.original_panorama.copy()
         self.parent.crop_top.set(0)
         self.parent.crop_bottom.set(0)
@@ -252,11 +275,13 @@ class PanoramaEditor:
         """Zoom avec la molette"""
         if not self.parent.current_panorama:
             return
-            
+        
+        current = self.parent.zoom_scale.get()
         if event.delta > 0:
-            new_zoom = min(200, self.parent.zoom_scale.get() + 10)
+            new_zoom = min(config.zoom_max, current + config.zoom_step)
         else:
-            new_zoom = max(10, self.parent.zoom_scale.get() - 10)
+            new_zoom = max(config.zoom_min, current - config.zoom_step)
+        
         self.parent.zoom_scale.set(new_zoom)
         self.parent.display_image_in_canvas()
     

@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 """
 Module 0 : Capture vidéo de zone d'écran
-Remplace ShareX pour un workflow intégré
+Version améliorée avec meilleure gestion d'erreurs
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import messagebox
 import cv2
 import numpy as np
 from pathlib import Path
 import threading
 import time
-from datetime import datetime
+
+from config import config
 
 try:
     import mss
+    import mss.exception
     MSS_AVAILABLE = True
 except ImportError:
     MSS_AVAILABLE = False
+
 
 class RegionSelector:
     """Overlay avec cadre persistant et boutons de contrôle flottants"""
@@ -30,6 +33,7 @@ class RegionSelector:
         self.region = None
         self.selecting = True
         self.frame_window = None
+        self.button_window = None
         
         # Créer fenêtre overlay fullscreen
         self.root = tk.Toplevel()
@@ -68,7 +72,7 @@ class RegionSelector:
             return
         if self.rect:
             self.canvas.delete(self.rect)
-        # Bordure plus fine (2px) en pointillés jaunes
+        # Bordure fine en pointillés jaunes
         self.rect = self.canvas.create_rectangle(
             self.start_x, self.start_y, event.x, event.y,
             outline='#FFD700', width=2, dash=(5, 5)
@@ -77,7 +81,7 @@ class RegionSelector:
     def on_release(self, event):
         if not self.selecting:
             return
-            
+        
         if self.start_x and self.start_y:
             x1 = min(self.start_x, event.x)
             y1 = min(self.start_y, event.y)
@@ -94,63 +98,61 @@ class RegionSelector:
                 # Fermer l'overlay fullscreen
                 self.root.destroy()
                 
-                # Créer un nouveau petit canvas juste pour le rectangle
+                # Créer un petit canvas pour le rectangle
                 self.frame_window = tk.Toplevel()
                 self.frame_window.overrideredirect(True)
                 self.frame_window.attributes('-topmost', True)
-                # Canvas de la taille du rectangle + un peu de marge pour la bordure
                 self.frame_window.geometry(f"{width+10}x{height+10}+{x1-5}+{y1-5}")
                 self.frame_window.attributes('-transparentcolor', 'black')
                 
                 # Canvas noir (sera transparent)
-                frame_canvas = tk.Canvas(self.frame_window, width=width+10, height=height+10, 
-                                        bg='black', highlightthickness=0)
+                frame_canvas = tk.Canvas(
+                    self.frame_window, width=width+10, height=height+10,
+                    bg='black', highlightthickness=0
+                )
                 frame_canvas.pack()
                 
-                # Dessiner le rectangle en pointillés au centre
+                # Rectangle en pointillés
                 self.rect = frame_canvas.create_rectangle(
                     5, 5, width+5, height+5,
                     outline='#FFD700', width=2, dash=(5, 5)
                 )
                 
-                # Créer les boutons flottants en dessous du cadre
+                # Boutons de contrôle
                 self.create_control_buttons(x1, y2)
             else:
-                # Zone trop petite, recommencer
+                # Zone trop petite
                 if self.rect:
                     self.canvas.delete(self.rect)
                 self.start_x = None
                 self.start_y = None
     
     def create_control_buttons(self, x, y):
-        """Crée les boutons de contrôle en dessous du cadre"""
-        # Frame pour les boutons (sous le cadre)
+        """Crée les boutons de contrôle sous le cadre"""
         button_y = y + 10
         button_x = x
         
-        # Créer une fenêtre Toplevel pour les boutons (indépendante)
         self.button_window = tk.Toplevel()
         self.button_window.overrideredirect(True)
         self.button_window.attributes('-topmost', True)
         self.button_window.geometry(f"280x45+{button_x}+{button_y}")
         self.button_window.configure(bg='#2b2b2b')
         
-        # Frame avec fond
         button_frame = tk.Frame(self.button_window, bg='#2b2b2b', padx=6, pady=6)
         button_frame.pack(fill='both', expand=True)
         
-        # Bouton Démarrer - icône plus grande
+        # Bouton Démarrer
         self.start_button = tk.Button(
-            button_frame, text="▶", 
+            button_frame, text="▶",
             command=self.start_recording,
             bg='#4CAF50', fg='white', font=('Arial', 14, 'bold'),
             padx=8, pady=2, cursor='hand2', relief='flat', width=2
         )
         self.start_button.pack(side='left', padx=2)
         
-        # Bouton Arrêter (désactivé au départ) - icône plus grande
+        # Bouton Arrêter
         self.stop_button = tk.Button(
-            button_frame, text="⏹", 
+            button_frame, text="⏹",
             command=self.stop_recording,
             bg='#f44336', fg='white', font=('Arial', 14, 'bold'),
             padx=8, pady=2, cursor='hand2', relief='flat', width=2,
@@ -158,18 +160,18 @@ class RegionSelector:
         )
         self.stop_button.pack(side='left', padx=2)
         
-        # Bouton Annuler - icône plus grande
+        # Bouton Annuler
         self.cancel_button = tk.Button(
-            button_frame, text="❌", 
+            button_frame, text="❌",
             command=self.cancel,
             bg='#FF9800', fg='white', font=('Arial', 12, 'bold'),
             padx=6, pady=2, cursor='hand2', relief='flat', width=2
         )
         self.cancel_button.pack(side='left', padx=2)
         
-        # Label de statut (plus petit et plus court)
+        # Label de statut
         self.status_label = tk.Label(
-            button_frame, text="Prêt", 
+            button_frame, text="Prêt",
             bg='#2b2b2b', fg='white', font=('Arial', 7)
         )
         self.status_label.pack(side='left', padx=4)
@@ -180,8 +182,6 @@ class RegionSelector:
             self.start_button.config(state='disabled')
             self.stop_button.config(state='normal')
             self.status_label.config(text="🔴 Enregistrement...")
-            
-            # Appeler le callback pour démarrer
             self.callback('start', self.region)
     
     def stop_recording(self):
@@ -190,11 +190,7 @@ class RegionSelector:
         self.stop_button.config(state='disabled')
         self.cancel_button.config(state='disabled')
         self.status_label.config(text="💾 Sauvegarde...")
-        
-        # Appeler le callback pour arrêter
         self.callback('stop', self.region)
-        
-        # Fermer après un court délai
         self.root.after(500, self.close)
     
     def cancel(self):
@@ -204,28 +200,27 @@ class RegionSelector:
     
     def close(self):
         """Ferme l'overlay"""
-        if hasattr(self, 'button_window'):
-            try:
-                self.button_window.destroy()
-            except:
-                pass
-        
-        if hasattr(self, 'frame_window'):
-            try:
-                self.frame_window.destroy()
-            except:
-                pass
+        for window in [self.button_window, self.frame_window]:
+            if window:
+                try:
+                    window.destroy()
+                except tk.TclError:
+                    pass
         
         if hasattr(self, 'root'):
             try:
                 self.root.destroy()
-            except:
+            except tk.TclError:
                 pass
     
     def update_status(self, text):
         """Met à jour le statut"""
         if hasattr(self, 'status_label'):
-            self.status_label.config(text=text)
+            try:
+                self.status_label.config(text=text)
+            except tk.TclError:
+                pass
+
 
 class VideoCapture:
     """Gère la capture vidéo d'une zone d'écran"""
@@ -233,23 +228,25 @@ class VideoCapture:
     def __init__(self, parent):
         self.parent = parent
         self.recording = False
-        self.paused = False
-        self.region = None  # (x, y, width, height)
-        self.output_folder = Path.cwd()  # Dossier courant au lieu de Documents
-        self.sct = None
+        self.region = None
+        self.output_folder = Path.cwd()
         self.writer = None
         self.monitor = None
-        self.fps = 30
+        self.fps = config.default_fps
         self.record_thread = None
         self.start_time = None
         self.frame_count = 0
         self.region_selector = None
         self.current_output_path = None
-        
+        self._recording_lock = threading.Lock()
+    
     def select_region(self):
         """Ouvre l'overlay pour sélectionner la zone"""
         if self.recording:
-            messagebox.showwarning("Enregistrement en cours", "Arrêtez l'enregistrement avant de changer la zone")
+            messagebox.showwarning(
+                "Enregistrement en cours",
+                "Arrêtez l'enregistrement avant de changer la zone"
+            )
             return
         
         self.region_selector = RegionSelector(self.on_region_action)
@@ -257,17 +254,12 @@ class VideoCapture:
     def on_region_action(self, action, region):
         """Callback quand l'utilisateur interagit avec l'overlay"""
         if action == 'start':
-            # Démarrer l'enregistrement
             self.region = region
             self.parent.on_capture_start(region)
-            
         elif action == 'stop':
-            # Arrêter l'enregistrement
             self.stop_recording()
             self.parent.on_capture_stop()
-            
         elif action == 'cancel':
-            # Annuler
             if self.recording:
                 self.cancel_recording()
                 self.parent.on_capture_cancel()
@@ -278,7 +270,10 @@ class VideoCapture:
         if not MSS_AVAILABLE:
             if self.region_selector:
                 self.region_selector.update_status("❌ Module mss manquant")
-            messagebox.showerror("Erreur", "Module 'mss' non installé.\nInstallez-le avec: pip install mss")
+            messagebox.showerror(
+                "Erreur",
+                "Module 'mss' non installé.\nInstallez-le avec: pip install mss"
+            )
             return False
         
         if not self.region:
@@ -286,15 +281,12 @@ class VideoCapture:
                 self.region_selector.update_status("❌ Aucune zone")
             return False
         
-        if self.recording:
-            return False
+        with self._recording_lock:
+            if self.recording:
+                return False
         
         try:
-            # NE PAS créer mss ici (problème de thread-safety)
-            # Il sera créé dans le thread d'enregistrement
-            
-            # Définir la région de capture
-            # Ajuster pour EXCLURE le cadre (marge de 4px de chaque côté)
+            # Ajuster pour exclure le cadre
             border_margin = 4
             capture_x = self.region[0] + border_margin
             capture_y = self.region[1] + border_margin
@@ -308,7 +300,7 @@ class VideoCapture:
                 'height': capture_height
             }
             
-            # Créer le writer vidéo (avec les dimensions ajustées)
+            # Créer le writer vidéo
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             self.writer = cv2.VideoWriter(
                 str(output_path),
@@ -318,10 +310,11 @@ class VideoCapture:
             )
             
             if not self.writer.isOpened():
-                raise Exception("Impossible de créer le fichier vidéo")
+                raise IOError("Impossible de créer le fichier vidéo")
             
             # Variables de suivi
-            self.recording = True
+            with self._recording_lock:
+                self.recording = True
             self.start_time = time.time()
             self.frame_count = 0
             self.current_output_path = output_path
@@ -332,67 +325,93 @@ class VideoCapture:
             
             self.parent.log(f"🔴 Enregistrement démarré: {output_path.name}")
             return True
-            
-        except Exception as e:
-            self.parent.log(f"❌ Erreur lors du démarrage: {e}")
+        
+        except IOError as e:
+            self.parent.log(f"❌ Erreur I/O: {e}")
             if self.region_selector:
-                self.region_selector.update_status(f"❌ Erreur: {str(e)[:20]}")
+                self.region_selector.update_status(f"❌ I/O: {str(e)[:15]}")
+            self.cleanup()
+            return False
+        
+        except cv2.error as e:
+            self.parent.log(f"❌ Erreur OpenCV: {e}")
+            if self.region_selector:
+                self.region_selector.update_status("❌ Erreur OpenCV")
+            self.cleanup()
+            return False
+        
+        except Exception as e:
+            self.parent.log(f"❌ Erreur inattendue: {type(e).__name__}: {e}")
+            if self.region_selector:
+                self.region_selector.update_status(f"❌ {type(e).__name__}")
             self.cleanup()
             return False
     
     def _record_loop(self):
-        """Boucle d'enregistrement (dans un thread séparé)"""
-        # Créer l'instance mss DANS ce thread (thread-safety)
+        """Boucle d'enregistrement (thread séparé)"""
         sct = None
         try:
             import mss as mss_module
             sct = mss_module.mss()
             
-            while self.recording:
+            while True:
+                with self._recording_lock:
+                    if not self.recording:
+                        break
+                
                 # Capturer l'écran
                 screenshot = sct.grab(self.monitor)
                 
-                # Convertir en numpy array
+                # Convertir en numpy array BGR
                 frame = np.array(screenshot)
-                
-                # Convertir de BGRA à BGR (format attendu par OpenCV)
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
                 
                 # Écrire la frame
                 self.writer.write(frame)
                 self.frame_count += 1
                 
-                # Mettre à jour l'UI périodiquement
+                # Mise à jour UI périodique
                 if self.frame_count % 30 == 0:
                     elapsed = time.time() - self.start_time
-                    actual_fps = self.frame_count / elapsed if elapsed > 0 else 0
                     
-                    # Mettre à jour le statut dans l'overlay (texte court)
                     if self.region_selector:
                         minutes = int(elapsed // 60)
                         seconds = int(elapsed % 60)
-                        status = f"🔴 {minutes:02d}:{seconds:02d}"
-                        self.region_selector.update_status(status)
+                        self.region_selector.update_status(f"🔴 {minutes:02d}:{seconds:02d}")
                 
                 # Contrôler le FPS
                 time.sleep(1.0 / self.fps)
-                
+        
+        except mss.exception.ScreenShotError as e:
+            self.parent.log(f"❌ Erreur capture écran: {e}")
+            with self._recording_lock:
+                self.recording = False
+        
+        except cv2.error as e:
+            self.parent.log(f"❌ Erreur OpenCV: {e}")
+            with self._recording_lock:
+                self.recording = False
+        
         except Exception as e:
-            self.parent.log(f"❌ Erreur pendant l'enregistrement: {e}")
-            self.recording = False
+            self.parent.log(f"❌ Erreur enregistrement: {type(e).__name__}: {e}")
+            with self._recording_lock:
+                self.recording = False
+        
         finally:
-            # Fermer mss proprement
             if sct:
-                sct.close()
+                try:
+                    sct.close()
+                except Exception:
+                    pass
     
     def stop_recording(self):
         """Arrête l'enregistrement et sauvegarde"""
-        if not self.recording:
-            return False
+        with self._recording_lock:
+            if not self.recording:
+                return False
+            self.recording = False
         
-        self.recording = False
-        
-        # Attendre la fin du thread (important!)
+        # Attendre la fin du thread
         if self.record_thread:
             self.record_thread.join(timeout=3)
             if self.record_thread.is_alive():
@@ -402,7 +421,7 @@ class VideoCapture:
         time.sleep(0.2)
         
         # Finaliser
-        elapsed = time.time() - self.start_time
+        elapsed = time.time() - self.start_time if self.start_time else 0
         self.cleanup()
         
         self.parent.log(f"⏹️ Enregistrement arrêté: {self.frame_count} frames en {elapsed:.1f}s")
@@ -412,24 +431,27 @@ class VideoCapture:
     
     def cancel_recording(self):
         """Annule l'enregistrement sans sauvegarder"""
-        if not self.recording:
-            return False
-        
-        self.recording = False
+        with self._recording_lock:
+            if not self.recording:
+                return False
+            self.recording = False
         
         # Attendre la fin du thread
         if self.record_thread:
             self.record_thread.join(timeout=2)
         
-        # Nettoyer et supprimer le fichier
+        # Nettoyer
         self.cleanup()
         
+        # Supprimer le fichier
         if self.current_output_path and self.current_output_path.exists():
             try:
                 self.current_output_path.unlink()
-                self.parent.log(f"🗑️ Enregistrement annulé et fichier supprimé")
-            except:
-                self.parent.log(f"⚠️ Enregistrement annulé (fichier non supprimé)")
+                self.parent.log("🗑️ Enregistrement annulé et fichier supprimé")
+            except PermissionError:
+                self.parent.log("⚠️ Enregistrement annulé (fichier non supprimé - permission)")
+            except Exception as e:
+                self.parent.log(f"⚠️ Enregistrement annulé (fichier non supprimé: {e})")
         
         return True
     
@@ -438,13 +460,10 @@ class VideoCapture:
         if self.writer:
             try:
                 self.writer.release()
-                self.parent.log("📝 Writer vidéo fermé proprement")
+                self.parent.log("📝 Writer vidéo fermé")
             except Exception as e:
-                self.parent.log(f"⚠️ Erreur lors de la fermeture du writer: {e}")
+                self.parent.log(f"⚠️ Erreur fermeture writer: {e}")
             self.writer = None
-        
-        # self.sct n'existe plus car créé dans le thread
-        self.sct = None
     
     def set_output_folder(self, folder):
         """Définit le dossier de sortie"""
@@ -453,6 +472,7 @@ class VideoCapture:
     
     def set_fps(self, fps):
         """Définit le FPS de capture"""
-        if not self.recording:
-            self.fps = fps
-            self.parent.log(f"🎞️ FPS réglé à: {fps}")
+        with self._recording_lock:
+            if not self.recording:
+                self.fps = max(config.min_fps, min(fps, config.max_fps))
+                self.parent.log(f"🎞️ FPS réglé à: {self.fps}")
